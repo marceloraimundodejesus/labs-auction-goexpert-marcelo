@@ -26,6 +26,7 @@ type BidRepository struct {
 	Collection            *mongo.Collection
 	AuctionRepository     *auction.AuctionRepository
 	auctionInterval       time.Duration
+	auctionDuration       time.Duration
 	auctionStatusMap      map[string]auction_entity.AuctionStatus
 	auctionEndTimeMap     map[string]time.Time
 	auctionStatusMapMutex *sync.Mutex
@@ -35,6 +36,7 @@ type BidRepository struct {
 func NewBidRepository(database *mongo.Database, auctionRepository *auction.AuctionRepository) *BidRepository {
 	return &BidRepository{
 		auctionInterval:       getAuctionInterval(),
+		auctionDuration:       getAuctionDuration(),
 		auctionStatusMap:      make(map[string]auction_entity.AuctionStatus),
 		auctionEndTimeMap:     make(map[string]time.Time),
 		auctionStatusMapMutex: &sync.Mutex{},
@@ -97,7 +99,7 @@ func (bd *BidRepository) CreateBid(
 			bd.auctionStatusMapMutex.Unlock()
 
 			bd.auctionEndTimeMutex.Lock()
-			bd.auctionEndTimeMap[bidValue.AuctionId] = auctionEntity.Timestamp.Add(bd.auctionInterval)
+			bd.auctionEndTimeMap[bidValue.AuctionId] = auctionEntity.Timestamp.Add(bd.auctionDuration)
 			bd.auctionEndTimeMutex.Unlock()
 
 			if _, err := bd.Collection.InsertOne(ctx, bidEntityMongo); err != nil {
@@ -112,4 +114,8 @@ func (bd *BidRepository) CreateBid(
 
 func getAuctionInterval() time.Duration {
 	return config.AuctionInterval()
+}
+
+func getAuctionDuration() time.Duration {
+	return config.AuctionDuration()
 }
