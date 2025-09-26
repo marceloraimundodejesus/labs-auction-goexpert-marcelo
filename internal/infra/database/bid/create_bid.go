@@ -119,3 +119,40 @@ func getAuctionInterval() time.Duration {
 func getAuctionDuration() time.Duration {
 	return config.AuctionDuration()
 }
+
+func (bd *BidRepository) StartWatcher(ctx context.Context) {
+	ticker := time.NewTicker(bd.auctionInterval)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				now := time.Now()
+				var toClose []string
+
+				bd.auctionEndTimeMutex.Lock()
+				for id, end := range bd.auctionEndTimeMap {
+					if now.After(end) {
+						toClose = append(toClose, id)
+					}
+				}
+				bd.auctionEndTimeMutex.Unlock()
+
+				for _, id := range toClose {
+					bd.auctionStatusMapMutex.Lock()
+					status := bd.auctionStatusMap[id]
+					bd.auctionStatusMapMutex.Unlock()
+
+					if status != auction_entity.Completed {
+						_ = bd.AuctionRepository.UpdateAuctionStatus(ctx, id, auction_entity.Completed)
+						bd.auctionStatusMapMutex.Lock()
+						bd.auctionStatusMap[id] = auction_entity.Completed
+						bd.auctionStatusMapMutex.Unlock()
+					}
+				}
+			}
+		}
+	}()
+}

@@ -12,14 +12,26 @@ import (
 	"fullcycle-auction_go/internal/usecase/auction_usecase"
 	"fullcycle-auction_go/internal/usecase/bid_usecase"
 	"fullcycle-auction_go/internal/usecase/user_usecase"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/mongo"
-	"log"
 )
 
 func main() {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sig
+		cancel()
+	}()
 
 	if err := godotenv.Load("cmd/auction/.env"); err != nil {
 		log.Fatal("Error trying to load env variables")
@@ -34,7 +46,7 @@ func main() {
 
 	router := gin.Default()
 
-	userController, bidController, auctionsController := initDependencies(databaseConnection)
+	userController, bidController, auctionsController := initDependencies(ctx, databaseConnection)
 
 	router.GET("/auction", auctionsController.FindAuctions)
 	router.GET("/auction/:auctionId", auctionsController.FindAuctionById)
@@ -47,7 +59,7 @@ func main() {
 	router.Run(":8080")
 }
 
-func initDependencies(database *mongo.Database) (
+func initDependencies(ctx context.Context, database *mongo.Database) (
 	userController *user_controller.UserController,
 	bidController *bid_controller.BidController,
 	auctionController *auction_controller.AuctionController) {
@@ -55,6 +67,8 @@ func initDependencies(database *mongo.Database) (
 	auctionRepository := auction.NewAuctionRepository(database)
 	bidRepository := bid.NewBidRepository(database, auctionRepository)
 	userRepository := user.NewUserRepository(database)
+
+	bidRepository.StartWatcher(ctx)
 
 	userController = user_controller.NewUserController(
 		user_usecase.NewUserUseCase(userRepository))
