@@ -3,11 +3,11 @@ package bid
 import (
 	"context"
 	"fullcycle-auction_go/configuration/logger"
+	"fullcycle-auction_go/internal/config"
 	"fullcycle-auction_go/internal/entity/auction_entity"
 	"fullcycle-auction_go/internal/entity/bid_entity"
 	"fullcycle-auction_go/internal/infra/database/auction"
 	"fullcycle-auction_go/internal/internal_error"
-	"os"
 	"sync"
 	"time"
 
@@ -26,6 +26,7 @@ type BidRepository struct {
 	Collection            *mongo.Collection
 	AuctionRepository     *auction.AuctionRepository
 	auctionInterval       time.Duration
+	auctionDuration       time.Duration
 	auctionStatusMap      map[string]auction_entity.AuctionStatus
 	auctionEndTimeMap     map[string]time.Time
 	auctionStatusMapMutex *sync.Mutex
@@ -35,6 +36,7 @@ type BidRepository struct {
 func NewBidRepository(database *mongo.Database, auctionRepository *auction.AuctionRepository) *BidRepository {
 	return &BidRepository{
 		auctionInterval:       getAuctionInterval(),
+		auctionDuration:       getAuctionDuration(),
 		auctionStatusMap:      make(map[string]auction_entity.AuctionStatus),
 		auctionEndTimeMap:     make(map[string]time.Time),
 		auctionStatusMapMutex: &sync.Mutex{},
@@ -97,7 +99,7 @@ func (bd *BidRepository) CreateBid(
 			bd.auctionStatusMapMutex.Unlock()
 
 			bd.auctionEndTimeMutex.Lock()
-			bd.auctionEndTimeMap[bidValue.AuctionId] = auctionEntity.Timestamp.Add(bd.auctionInterval)
+			bd.auctionEndTimeMap[bidValue.AuctionId] = auctionEntity.Timestamp.Add(bd.auctionDuration)
 			bd.auctionEndTimeMutex.Unlock()
 
 			if _, err := bd.Collection.InsertOne(ctx, bidEntityMongo); err != nil {
@@ -111,11 +113,46 @@ func (bd *BidRepository) CreateBid(
 }
 
 func getAuctionInterval() time.Duration {
-	auctionInterval := os.Getenv("AUCTION_INTERVAL")
-	duration, err := time.ParseDuration(auctionInterval)
-	if err != nil {
-		return time.Minute * 5
-	}
+	return config.AuctionInterval()
+}
 
-	return duration
+func getAuctionDuration() time.Duration {
+	return config.AuctionDuration()
+}
+
+func (bd *BidRepository) StartWatcher(ctx context.Context) {
+	ticker := time.NewTicker(bd.auctionInterval)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				now := time.Now()
+				var toClose []string
+
+				bd.auctionEndTimeMutex.Lock()
+				for id, end := range bd.auctionEndTimeMap {
+					if now.After(end) {
+						toClose = append(toClose, id)
+					}
+				}
+				bd.auctionEndTimeMutex.Unlock()
+
+				for _, id := range toClose {
+					bd.auctionStatusMapMutex.Lock()
+					status := bd.auctionStatusMap[id]
+					bd.auctionStatusMapMutex.Unlock()
+
+					if status != auction_entity.Completed {
+						_ = bd.AuctionRepository.UpdateAuctionStatus(ctx, id, auction_entity.Completed)
+						bd.auctionStatusMapMutex.Lock()
+						bd.auctionStatusMap[id] = auction_entity.Completed
+						bd.auctionStatusMapMutex.Unlock()
+					}
+				}
+			}
+		}
+	}()
 }

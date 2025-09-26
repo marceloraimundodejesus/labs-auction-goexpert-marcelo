@@ -3,8 +3,10 @@ package auction
 import (
 	"context"
 	"fullcycle-auction_go/configuration/logger"
+	"fullcycle-auction_go/internal/config"
 	"fullcycle-auction_go/internal/entity/auction_entity"
 	"fullcycle-auction_go/internal/internal_error"
+	"time"
 
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -18,6 +20,7 @@ type AuctionEntityMongo struct {
 	Status      auction_entity.AuctionStatus    `bson:"status"`
 	Timestamp   int64                           `bson:"timestamp"`
 }
+
 type AuctionRepository struct {
 	Collection *mongo.Collection
 }
@@ -31,6 +34,7 @@ func NewAuctionRepository(database *mongo.Database) *AuctionRepository {
 func (ar *AuctionRepository) CreateAuction(
 	ctx context.Context,
 	auctionEntity *auction_entity.Auction) *internal_error.InternalError {
+
 	auctionEntityMongo := &AuctionEntityMongo{
 		Id:          auctionEntity.Id,
 		ProductName: auctionEntity.ProductName,
@@ -46,5 +50,26 @@ func (ar *AuctionRepository) CreateAuction(
 		return internal_error.NewInternalServerError("Error trying to insert auction")
 	}
 
+	go ar.watchAndClose(auctionEntity.Id, auctionEntity.Timestamp)
+
 	return nil
+}
+
+func (ar *AuctionRepository) watchAndClose(id string, createdAt time.Time) {
+	interval := config.AuctionInterval()
+	duration := config.AuctionDuration()
+	deadline := createdAt.Add(duration)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		now := time.Now()
+		if !now.Before(deadline) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = ar.UpdateAuctionStatus(ctx, id, auction_entity.Completed)
+			cancel()
+			return
+		}
+	}
 }
